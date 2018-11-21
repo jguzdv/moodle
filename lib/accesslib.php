@@ -717,6 +717,37 @@ function is_siteadmin($user_or_id = null) {
 }
 
 /**
+ * Returns true foreach user, that has at least one role assign
+ * of 'coursecontact' role (is potentially listed in some course descriptions).
+ *
+ * @param array of int $userid
+ * @return array of bool
+ */
+function has_coursecontact_role_fast($userids) {
+    global $DB, $CFG;
+
+    $result = array();
+
+    foreach($userids as $userid) {
+        $result[$userid] = false;
+    }
+
+    if(!empty($CFG->coursecontact)) {    
+        //TODO: Sloppy Paramter userid - use parameterized SQL if possible.
+        $sql = "SELECT userid
+            FROM {role_assignments}
+            WHERE roleid IN ($CFG->coursecontact) AND userid IN (" . implode(",", $userids) . ")";
+
+        $sqlresults = $DB->get_records_sql($sql);
+        foreach($sqlresults as $sqlresult) {
+            $result[$sqlresult->userid] = true;
+        }
+    }
+
+    return $result;
+}
+
+/**
  * Returns true if user has at least one role assign
  * of 'coursecontact' role (is potentially listed in some course descriptions).
  *
@@ -724,15 +755,7 @@ function is_siteadmin($user_or_id = null) {
  * @return bool
  */
 function has_coursecontact_role($userid) {
-    global $DB, $CFG;
-
-    if (empty($CFG->coursecontact)) {
-        return false;
-    }
-    $sql = "SELECT 1
-              FROM {role_assignments}
-             WHERE userid = :userid AND roleid IN ($CFG->coursecontact)";
-    return $DB->record_exists_sql($sql, array('userid'=>$userid));
+    return has_coursecontact_role_fast(array($userid))[$userid];
 }
 
 /**
@@ -6005,6 +6028,39 @@ class context_system extends context {
     }
 
     /**
+     * Prepares cache for user context requests.
+     * Use this, if you expect many cache misses.
+     * 
+     * @static
+     * @param array $userids ids from {user} table to populate cache
+     */
+    public static function populate_cache($userids) {
+        global $DB;
+
+        if(empty($userids)) {
+            return;
+        }
+
+        $populateids = array();
+        foreach($userids as $userid) {
+            if(!context::cache_get(CONTEXT_USER, $userid))
+                $populateids[] = $userid;
+        }
+
+        if(empty($populateids)) {
+            return;
+        }
+
+        $sql = "SELECT * FROM {context} WHERE contextlevel = ".CONTEXT_USER." AND instanceid IN (".implode(",", $populateids).")"; 
+
+        $records = $DB->get_recordset_sql($sql);
+        foreach($records as $record) {
+            $context = new context_user($record);
+            context::cache_add($context);
+        }
+    }
+
+    /**
      * Create missing context instances at system context
      * @static
      */
@@ -6521,6 +6577,39 @@ class context_coursecat extends context {
         }
 
         return $result;
+    }
+
+    /**
+     * Prepares cache for course context requests.
+     * Use this, if you expect many cache misses.
+     * 
+     * @static
+     * @param array $userids ids from {user} table to populate cache
+     */
+    public static function populate_cache($courseids) {
+        global $DB;
+
+        if(empty($courseids)) {
+            return;
+        }
+
+        $populateids = array();
+        foreach($courseids as $id) {
+            if(!context::cache_get(CONTEXT_COURSE, $id))
+                $populateids[] = $id;
+        }
+
+        if(empty($populateids)) {
+            return;
+        }
+
+        $sql = "SELECT * FROM {context} WHERE contextlevel = ".CONTEXT_COURSE." AND instanceid IN (".implode(",", $populateids).")"; 
+
+        $records = $DB->get_recordset_sql($sql);
+        foreach($records as $record) {
+            $context = new context_course($record);
+            context::cache_add($context);
+        }
     }
 
     /**

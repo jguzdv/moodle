@@ -543,6 +543,46 @@ class profile_field_base {
 }
 
 /**
+ * Returns an array of all custom field records with any defined data (or empty data), for the specified user ids.
+ * @param array $userids
+ * @return profile_field_base[][]
+ */
+function profile_get_user_fields_with_data_fast($userids) {
+    global $DB, $CFG;
+
+    if(empty($userids))
+        return array();
+
+    $result = array();
+
+    // Join any user info data present with each user info field for the user object.
+    $sql = 'SELECT uif.*, uic.name AS categoryname ';
+    $sql .= ', uind.id AS hasuserdata, uind.data, uind.dataformat, uind.userid ';
+    $sql .= 'FROM {user_info_field} uif ';
+    $sql .= 'LEFT JOIN {user_info_category} uic ON uif.categoryid = uic.id ';
+    $sql .= 'LEFT JOIN {user_info_data} uind ON uif.id = uind.fieldid AND uind.userid IN ('.implode(",",$userids).') ';
+    $sql .= 'ORDER BY uic.sortorder ASC, uif.sortorder ASC ';
+    $fields = $DB->get_records_sql($sql);
+
+    foreach($userids as $userid) {
+        $result[$userid] = array();
+    }
+
+    foreach ($fields as $field) {
+        require_once($CFG->dirroot . '/user/profile/field/' . $field->datatype . '/field.class.php');
+        $classname = 'profile_field_' . $field->datatype;
+        $field->hasuserdata = !empty($field->hasuserdata);
+        /** @var profile_field_base $fieldobject */
+        $fieldobject = new $classname($field->id, $field->userid, $field);
+        $fieldobject->set_category_name($field->categoryname);
+        unset($field->categoryname);
+        $result[$userid][] = $fieldobject;
+    }
+
+    return $result;
+}
+
+/**
  * Returns an array of all custom field records with any defined data (or empty data), for the specified user id.
  * @param int $userid
  * @return profile_field_base[]
@@ -572,6 +612,23 @@ function profile_get_user_fields_with_data($userid) {
         $fieldobject->set_category_name($field->categoryname);
         unset($field->categoryname);
         $data[] = $fieldobject;
+    }
+    return $data;
+}
+
+/**
+ * Returns an array of all custom field records with any defined data (or empty data), for the specified user ids, by category.
+ * @param array $userid
+ * @return profile_field_base[][][]
+ */
+function profile_get_user_fields_with_data_by_category_fast($userids) {
+    $fields = profile_get_user_fields_with_data_fast($userids);
+    $data = [];
+    foreach($userids as $userid) {
+        $data[$userid] = [];
+        foreach ($fields[$userid] as $field) {
+            $data[$userid][$field->field->categoryid][] = $field;
+        }
     }
     return $data;
 }

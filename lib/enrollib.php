@@ -248,6 +248,57 @@ function enrol_check_plugins($user) {
     unset($inprogress[$user->id]);  // Unset the flag
 }
 
+/*
+ * Does User share courses with $users?
+ * 
+ * @param int $userid
+ * @param array $userids
+ * @return array bool[$userid]
+ */
+function enrol_sharing_course_fast($refuser, $userids) {
+    global $DB, $CFG;
+
+    $result = array();
+    if(empty($userids))
+        return array();
+
+    foreach($userids as $userid) {
+        $result[$userid] = false;
+    }
+
+    $params = array();
+    $params['active'] = ENROL_USER_ACTIVE;
+    $params['enabled'] = ENROL_INSTANCE_ENABLED;
+
+    $sqltemplate = "SELECT c.id, ue.userid
+        FROM {course} c
+            JOIN {enrol} e
+                ON e.courseid = c.id
+            JOIN {user_enrolments} ue ON ue.enrolid = e.id
+        WHERE c.visible = 1 AND ue.status = :active AND e.status = :enabled ";
+
+    $sqlrefuser = $sqltemplate . "AND ue.userid = :refuser";
+    
+    $refparams = array_merge(array('refuser' => $refuser), $params);
+    $refcoursesrecords = $DB->get_records_sql($sqlrefuser, $refparams);
+    $refcourses = array();
+    foreach($refcoursesrecords as $record) {
+        $refcourses[] = $record->id;
+    }
+
+    if(empty($refcourses))
+        return array();
+    
+    $sqlshared = $sqltemplate . "AND ue.userid IN (".implode(",", $userids).") AND c.id IN (".implode(",", $refcourses).")";
+    $sharedrecords = $DB->get_records_sql($sqlshared, $params);
+
+    foreach($sharedrecords as $record) {
+        $result[$record->userid] = true;
+    }
+
+    return $result;
+}
+
 /**
  * Do these two students share any course?
  *
@@ -836,6 +887,60 @@ function enrol_get_course_description_texts($course) {
  * The $fields param is a list of field names to ADD so name just the fields you really need,
  * which will be added and uniq'd.
  *
+ * @param array $userids (of int) Users whose courses are returned, defaults to the current user.
+ * @param bool $onlyactive Return only active enrolments in courses user may see.
+ * @param string|array $fields Extra fields to be returned (array or comma-separated list).
+ * @param string|null $sort Comma separated list of fields to sort by, defaults to respecting navsortmycoursessort.
+ * @return array
+ */
+function enrol_get_users_courses_fast($userids, $onlyactive = false, $fields = null, $sort = null) {
+    global $DB;
+
+    if(empty($userids))
+        return array();
+
+    $usercourses = enrol_get_all_users_courses_fast($userids, $onlyactive, $fields, $sort);
+
+    $courseids = array();
+
+    foreach($usercourses as $user) {
+        foreach($user as $course) {
+            $courseids[] = $course->id;
+        }
+    }
+
+    context_course::populate_cache($courseids);
+
+    // preload contexts and check visibility
+    if ($onlyactive) {
+        foreach($usercourses as $courses) {
+            foreach ($courses as $id=>$course) {
+                context_helper::preload_from_record($course);
+                if (!$course->visible) {
+                    if (!$context = context_course::instance($id)) {
+                        unset($courses[$id]);
+                        continue;
+                    }
+                    if (!has_capability('moodle/course:viewhiddencourses', $context, $userid)) {
+                        unset($courses[$id]);
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+
+    return $usercourses;
+}
+
+/**
+ * Returns list of courses user is enrolled into.
+ *
+ * Note: Use {@link enrol_get_all_users_courses()} if you need the list without any capability checks.
+ *
+ * The $fields param is a list of field names to ADD so name just the fields you really need,
+ * which will be added and uniq'd.
+ *
  * @param int $userid User whose courses are returned, defaults to the current user.
  * @param bool $onlyactive Return only active enrolments in courses user may see.
  * @param string|array $fields Extra fields to be returned (array or comma-separated list).
@@ -843,29 +948,10 @@ function enrol_get_course_description_texts($course) {
  * @return array
  */
 function enrol_get_users_courses($userid, $onlyactive = false, $fields = null, $sort = null) {
-    global $DB;
-
-    $courses = enrol_get_all_users_courses($userid, $onlyactive, $fields, $sort);
-
-    // preload contexts and check visibility
-    if ($onlyactive) {
-        foreach ($courses as $id=>$course) {
-            context_helper::preload_from_record($course);
-            if (!$course->visible) {
-                if (!$context = context_course::instance($id)) {
-                    unset($courses[$id]);
-                    continue;
-                }
-                if (!has_capability('moodle/course:viewhiddencourses', $context, $userid)) {
-                    unset($courses[$id]);
-                    continue;
-                }
-            }
-        }
-    }
-
-    return $courses;
-
+    if(empty($userid) || $userid === null)
+        return array();
+    
+    return enrol_get_users_courses_fast(array($userid), $onlyactive, $fields, $sort)[$userid];
 }
 
 /**
@@ -924,14 +1010,20 @@ function enrol_user_sees_own_courses($user = null) {
  * The $fields param is a list of field names to ADD so name just the fields you really need,
  * which will be added and uniq'd.
  *
- * @param int $userid User whose courses are returned, defaults to the current user.
+ * @param array $userids Users whose courses are returned.
  * @param bool $onlyactive Return only active enrolments in courses user may see.
  * @param string|array $fields Extra fields to be returned (array or comma-separated list).
  * @param string|null $sort Comma separated list of fields to sort by, defaults to respecting navsortmycoursessort.
  * @return array
  */
-function enrol_get_all_users_courses($userid, $onlyactive = false, $fields = null, $sort = null) {
+function enrol_get_all_users_courses_fast($userids, $onlyactive = false, $fields = null, $sort = null) {
     global $CFG, $DB;
+
+    $result = array();
+
+    foreach($userids as $userid) {
+        $result[$userid] = array();
+    }
 
     if ($sort === null) {
         if (empty($CFG->navsortmycoursessort)) {
@@ -940,12 +1032,7 @@ function enrol_get_all_users_courses($userid, $onlyactive = false, $fields = nul
             $sort = 'visible DESC, '.$CFG->navsortmycoursessort.' ASC';
         }
     }
-
-    // Guest account does not have any courses
-    if (isguestuser($userid) or empty($userid)) {
-        return(array());
-    }
-
+    
     $basefields = array('id', 'category', 'sortorder',
             'shortname', 'fullname', 'idnumber',
             'startdate', 'visible',
@@ -1002,21 +1089,49 @@ function enrol_get_all_users_courses($userid, $onlyactive = false, $fields = nul
     $params['contextlevel'] = CONTEXT_COURSE;
 
     //note: we can not use DISTINCT + text fields due to Oracle and MS limitations, that is why we have the subselect there
-    $sql = "SELECT $coursefields $ccselect
-              FROM {course} c
-              JOIN (SELECT DISTINCT e.courseid
-                      FROM {enrol} e
-                      JOIN {user_enrolments} ue ON (ue.enrolid = e.id AND ue.userid = :userid)
-                 $subwhere
-                   ) en ON (en.courseid = c.id)
-           $ccjoin
-             WHERE c.id <> :siteid
-          $orderby";
-    $params['userid']  = $userid;
+    $sql = "SELECT $coursefields $ccselect, en.userid
+                FROM {course} c
+                JOIN (SELECT DISTINCT e.courseid, ue.userid
+                        FROM {enrol} e
+                        JOIN {user_enrolments} ue ON (ue.enrolid = e.id AND ue.userid IN (".implode(",", $userids)."))
+                    $subwhere
+                    ) en ON (en.courseid = c.id)
+            $ccjoin
+                WHERE c.id <> :siteid
+            $orderby";
 
-    $courses = $DB->get_records_sql($sql, $params);
+    $usercourses = $DB->get_records_sql($sql, $params);
 
-    return $courses;
+    foreach($usercourses as $usercourse) {
+        $result[$usercourse->userid][] = $usercourse;
+    }
+    
+    foreach($userids as $userid) {
+        if (empty($userid) || isguestuser($userid)) {
+            $result[$userid] = array();
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Returns list of courses user is enrolled into without performing any capability checks.
+ *
+ * The $fields param is a list of field names to ADD so name just the fields you really need,
+ * which will be added and uniq'd.
+ *
+ * @param int $userid User whose courses are returned.
+ * @param bool $onlyactive Return only active enrolments in courses user may see.
+ * @param string|array $fields Extra fields to be returned (array or comma-separated list).
+ * @param string|null $sort Comma separated list of fields to sort by, defaults to respecting navsortmycoursessort.
+ * @return array
+ */
+function enrol_get_all_users_courses($userid, $onlyactive = false, $fields = null, $sort = null) {
+    if(empty($userid) || $userid === null)
+        return array();
+    
+    return enrol_get_all_users_courses_fast(array($userid), $onlyactive, $fields, $sort)[$userid];
 }
 
 

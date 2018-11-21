@@ -892,23 +892,18 @@ class core_user_external extends external_api {
 
         // Finally retrieve each users information.
         $returnedusers = array();
-        foreach ($users as $user) {
-            $userdetails = user_get_user_details_courses($user);
+        $alluserdetails = user_get_user_details_courses_fast($users);
+        foreach ($alluserdetails as $userdetails) {
+            $validuser = true;
 
-            // Return the user only if all the searched fields are returned.
-            // Otherwise it means that the $USER was not allowed to search the returned user.
-            if (!empty($userdetails)) {
-                $validuser = true;
-
-                foreach ($params['criteria'] as $criteria) {
-                    if (empty($userdetails[$criteria['key']])) {
-                        $validuser = false;
-                    }
+            foreach ($params['criteria'] as $criteria) {
+                if (empty($userdetails[$criteria['key']])) {
+                    $validuser = false;
                 }
+            }
 
-                if ($validuser) {
-                    $returnedusers[] = $userdetails;
-                }
+            if ($validuser) {
+                $returnedusers[] = $userdetails;
             }
         }
 
